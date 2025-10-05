@@ -1,13 +1,11 @@
 import os
 import psycopg2
 from psycopg2.extras import Json
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Extra
+from fastapi.middleware.cors import CORSMiddleware # <<< 1. IMPORTE O MIDDLEWARE
 
 # --- Modelo de Dados Dinâmico (Pydantic) ---
-# Usar `Extra.allow` permite que o modelo aceite quaisquer campos
-# que venham do SurveyJS (question1, question2, etc.) sem listá-los explicitamente.
-# Isso torna o backend muito mais flexível a mudanças no formulário.
 class SurveyData(BaseModel, extra=Extra.allow):
     pass
 
@@ -18,8 +16,21 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# --- 2. ADICIONE O BLOCO DE CONFIGURAÇÃO DO CORS ---
+# Esta lista contém os domínios do front-end que podem fazer requisições à sua API.
+origins = [
+    "https://forms.cortix.info",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,  # Permite as origens da lista
+    allow_credentials=True,
+    allow_methods=["*"],    # Permite todos os métodos (GET, POST, etc.)
+    allow_headers=["*"],    # Permite todos os cabeçalhos
+)
+
 # --- Configuração do Banco de Dados a partir de Variáveis de Ambiente ---
-# Esta é a forma segura e correta para deploy.
 DB_NAME = os.getenv("DB_NAME")
 DB_USER = os.getenv("DB_USER")
 DB_PASS = os.getenv("DB_PASS")
@@ -33,13 +44,11 @@ def save_survey_data(data: SurveyData):
     Este endpoint recebe os dados do SurveyJS via POST, valida a estrutura
     e os salva na tabela 'respostas_survey' do PostgreSQL.
     """
-    # Validação para garantir que as variáveis de ambiente foram carregadas
     if not all([DB_NAME, DB_USER, DB_PASS, DB_HOST]):
         raise HTTPException(status_code=500, detail="As variáveis de ambiente do banco de dados não estão configuradas no servidor.")
 
     conn = None
     try:
-        # Conecta ao banco de dados PostgreSQL
         conn = psycopg2.connect(
             dbname=DB_NAME,
             user=DB_USER,
@@ -48,35 +57,19 @@ def save_survey_data(data: SurveyData):
             port=DB_PORT
         )
         cursor = conn.cursor()
-
-        # Comando SQL para inserir os dados JSONB na tabela
-        sql_command = """
-            INSERT INTO respostas_survey (dados_respostas)
-            VALUES (%s) RETURNING id;
-        """
-
-        # Converte o modelo Pydantic para um dicionário e depois para o formato Json
+        sql_command = "INSERT INTO respostas_survey (dados_respostas) VALUES (%s) RETURNING id;"
         survey_data_dict = data.dict()
         cursor.execute(sql_command, (Json(survey_data_dict),))
-        
-        # Recupera o ID da inserção para confirmação
         new_id = cursor.fetchone()[0]
-
-        # Confirma a transação
         conn.commit()
-
         return {"message": "Dados salvos com sucesso!", "id_resposta": new_id}
-
     except psycopg2.Error as e:
-        # Em caso de erro de banco de dados, imprime o erro no log do servidor
         print(f"Erro de banco de dados: {e}")
         raise HTTPException(status_code=500, detail="Erro ao salvar os dados no banco de dados.")
     except Exception as e:
-        # Para qualquer outro tipo de erro
         print(f"Erro inesperado: {e}")
         raise HTTPException(status_code=500, detail="Ocorreu um erro interno no servidor.")
     finally:
-        # Garante que a conexão com o banco seja sempre fechada
         if conn:
             cursor.close()
             conn.close()
